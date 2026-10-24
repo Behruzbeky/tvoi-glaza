@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Твои глаза</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; cursor: pointer; }
+
+  #lock { position: fixed; inset: 0; z-index: 10; background: #000; transition: opacity 1.4s ease; }
+  #lock.open { opacity: 0; pointer-events: none; }
+  #rain { position: absolute; inset: 0; cursor: default; }
+  #lock::after {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse 34% 30% at 50% 50%, rgba(8,2,2,.88) 0%, rgba(8,2,2,.5) 55%, rgba(0,0,0,0) 100%);
+  }
+  #lock-form {
+    position: absolute; z-index: 1; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: min(560px, calc(100vw - 32px)); text-align: center;
+    font-family: "Great Vibes", "Monotype Corsiva", Georgia, serif; color: #f1e4d4;
+  }
+  #lock-form .mark { font-family: Georgia, serif; color: #c9a46a; letter-spacing: .6em; text-indent: .6em; font-size: 14px; opacity: .85; }
+  #lock-form h1 {
+    margin: 4px 0 22px; font-weight: 400; font-size: clamp(60px, 17vw, 108px);
+    line-height: 1.05; white-space: nowrap;
+    text-shadow: 0 0 26px rgba(190,40,40,.8), 0 0 2px rgba(0,0,0,.9);
+  }
+  #lock-pass {
+    width: min(100%, 380px); box-sizing: border-box; padding: 8px 4px; background: transparent; border: 0;
+    border-bottom: 1px solid rgba(241,228,212,.35); outline: none; text-align: center;
+    font: 22px Georgia, serif; letter-spacing: .3em; color: #f1e4d4; caret-color: #c9a46a;
+    transition: border-color .4s;
+  }
+  #lock-pass::selection { background: rgba(150,30,30,.5); }
+  #lock-pass:focus { border-bottom-color: rgba(201,164,106,.85); }
+  #lock-pass::placeholder { font-family: "Great Vibes", Georgia, serif; color: rgba(241,228,212,.5); letter-spacing: .05em; font-size: 28px; }
+  #lock-hint { margin-top: 14px; font-size: 24px; color: rgba(217,168,106,.8); }
+  #lock-msg { height: 30px; margin-top: 6px; font-size: 24px; color: #e8b77a; opacity: 0; transition: opacity .4s; }
+  #lock-msg.show { opacity: .85; }
+  #lock-form.shake { animation: shake .45s ease; }
+  @keyframes shake {
+    20%, 60% { transform: translate(calc(-50% - 7px), -50%); }
+    40%, 80% { transform: translate(calc(-50% + 7px), -50%); }
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="lock">
+  <canvas id="rain"></canvas>
+  <form id="lock-form" autocomplete="off">
+    <div class="mark">✦ ❈ ✦</div>
+    <h1>Твои глаза</h1>
+    <input id="lock-pass" type="password" placeholder="пароль" aria-label="Пароль" autocomplete="current-password">
+    <div id="lock-hint">подсказка: дата рождения солнышка</div>
+    <div id="lock-msg"></div>
+  </form>
+</div>
+<script src="carpet.js"></script>
+<script src="assets.enc.js"></script>
+<script src="password.js"></script>
+<script src="lock.js" defer></script>
+<script>
+// Сцена рисуется в маленький offscreen-канвас (1 пиксель = 1 символ),
+// затем каждый пиксель превращается в цветной ASCII-символ по яркости.
+const RAMP = " .`'^\",:;Il!i~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$";
+const TAU = Math.PI * 2;
+const LOOP = 26;
+
+// Зрачок на фото глаза (assets/eye.jpg, 1152×804)
+const PUPIL = { x: 600, y: 374, r: 88 };
+
+const out = document.getElementById('c');
+const octx = out.getContext('2d');
+const src = document.createElement('canvas');
+const sctx = src.getContext('2d', { willReadFrequently: true });
+let W, H, DPR, COLS, ROWS, CW, CH, FS;
+
+function resize() {
+  DPR = Math.min(devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  out.width = W * DPR; out.height = H * DPR;
+  COLS = Math.round(Math.min(200, Math.max(100, W / 5.5)));
+  CW = W / COLS; FS = CW / 0.6; CH = FS * 0.92;
+  ROWS = Math.ceil(H / CH);
+  src.width = COLS; src.height = ROWS;
+  octx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  octx.font = `bold ${FS}px Consolas, "Courier New", monospace`;
+  octx.textBaseline = 'top';
+}
+addEventListener('resize', resize);
+resize();
+
+// ---------- helpers ----------
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const ease = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+const easeOut = t => 1 - Math.pow(1 - t, 3);
+function rng(seed) {
+  return () => {
+    seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const loadImage = url => new Promise((ok, fail) => { const i = new Image(); i.onload = () => ok(i); i.onerror = fail; i.src = url; });
+
+// Чёрный фон фото лилий → прозрачность, чтобы цветы перекрывали друг друга как настоящий букет
+function cutout(img) {
+  const c = document.createElement('canvas');
+  c.width = img.width; c.height = img.height;
+  const x = c.getContext('2d');
+  x.drawImage(img, 0, 0);
+  const id = x.getImageData(0, 0, c.width, c.height), d = id.data;
+  for (let p = 0; p < d.length; p += 4) {
+    const v = Math.max(d[p], d[p + 1], d[p + 2]) / 255;
+    d[p + 3] = 255 * clamp((v - .05) / .13);
+    // в ASCII цвет теряет яркость — подсвечиваем лепестки заранее
+    for (let k = 0; k < 3; k++) d[p + k] = Math.min(255, d[p + k] * 1.3);
+  }
+  x.putImageData(id, 0, 0);
+  return c;
+}
+
+// ---------- data ----------
+const R1 = rng(7);
+const STARS = Array.from({ length: 160 }, () => ({ x: R1() * 2 - 1, y: R1() * 2 - 1, p: R1() * TAU, v: .8 + R1() * 2 }));
+
+// Букет в «дизайн-единицах»: квадрат 1000×1000 с центром в зрачке.
+// x — центр цветка, bottom — низ стебля, h — высота. Порядок = сзади → вперёд.
+const LILIES = [
+  { key: 'lily-pink', x: -200, bottom: 360, h: 760 },
+  { key: 'lily-white', x: 220, bottom: 390, h: 800 },
+  { key: 'lily-red', x: -250, bottom: 440, h: 720 },
+  { key: 'lily-magenta', x: 40, bottom: 430, h: 830 }
+];
+let EYE = null;
+
+// ---------- timeline ----------
+// 0–2.8 отъезд от радужки · 2.8–5 глаз целиком · 5–9.5 наезд в зрачок · 7–16 лилии прорастают
+// 9.5–19 внутри · 19–23 отъезд, лилии видны в зрачке · 23–24.5 гаснут · 24.5–26 снова к радужке
+function timeline(t) {
+  const T = t % LOOP;
+  const ZS = 2.6;
+  const zmax = Math.log(zoomMax());
+  let lz;
+  if (T < 2.8) lz = Math.log(ZS) * (1 - ease(T / 2.8));
+  else if (T < 5) lz = Math.log(1 + .015 * Math.sin((T - 2.8) * 2));
+  else if (T < 9.5) lz = zmax * ease((T - 5) / 4.5);
+  else if (T < 19) lz = zmax;
+  else if (T < 23) lz = zmax * (1 - ease((T - 19) / 4));
+  else if (T < 24.5) lz = 0;
+  else lz = Math.log(ZS) * ease((T - 24.5) / 1.5);
+  const la = T < 23 ? 1 : clamp(1 - (T - 23) / 1.5);
+  return {
+    t: T, Z: Math.exp(lz),
+    g: clamp((T - 7) / 9),
+    la,
+    dark: clamp((T - 5) / 2) * la
+  };
+}
+
+// ---------- eye ----------
+const baseScale = () => Math.max(W / (2 * Math.min(PUPIL.x, 1152 - PUPIL.x)), H / (2 * Math.min(PUPIL.y, 804 - PUPIL.y)));
+const fullPupil = () => Math.hypot(W, H) / 2 * 1.05;
+const zoomMax = () => fullPupil() / (PUPIL.r * baseScale());
+
+function drawEye(c, s) {
+  const k = baseScale() * s.Z;
+  const cx = W / 2, cy = H / 2;
+  c.imageSmoothingQuality = 'high';
+  c.drawImage(EYE, cx - PUPIL.x * k, cy - PUPIL.y * k, EYE.width * k, EYE.height * k);
+
+  const pr = PUPIL.r * k;
+  if (s.dark > 0) {
+    // зрачок «проваливается» в темноту, перекрывая блик на фото
+    const g = c.createRadialGradient(cx, cy, pr * .7, cx, cy, pr * 1.04);
+    g.addColorStop(0, `rgba(0,0,0,${s.dark})`); g.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = g; c.beginPath(); c.arc(cx, cy, pr * 1.04, 0, TAU); c.fill();
+    drawPupilWorld(c, cx, cy, pr * .97, s);
+  }
+}
+
+// ---------- мир внутри зрачка ----------
+function drawPupilWorld(c, px, py, pr, s) {
+  const FP = fullPupil(), L = pr / FP;
+  c.save();
+  c.beginPath(); c.arc(px, py, pr, 0, TAU); c.clip();
+  const sa = clamp(L * 3) * s.dark;
+  c.fillStyle = '#fff';
+  for (const st of STARS) {
+    c.globalAlpha = sa * (.3 + .6 * Math.abs(Math.sin(s.t * st.v + st.p)));
+    c.fillRect(px + st.x * FP * L, py + st.y * FP * L, CW * .8, CH * .45);
+  }
+  c.globalAlpha = s.la;
+  if (s.la > 0 && s.g > 0) drawBouquet(c, px, py, Math.min(W, H) / 1000 * .98 * L, s);
+  c.restore();
+}
+
+// Все лилии один раз складываются в общий холст-букет (дизайн-квадрат 1000×1000 → BQ px)
+const BQ = 900, BQ_BOTTOM = 470;
+let BOUQUET = null, BMASK = null;
+function composeBouquet() {
+  BOUQUET = document.createElement('canvas');
+  BOUQUET.width = BOUQUET.height = BQ;
+  const x = BOUQUET.getContext('2d'), k = BQ / 1000;
+  for (const f of LILIES) {
+    const h = f.h * k, w = h * f.img.width / f.img.height;
+    x.drawImage(f.img, (500 + f.x) * k - w / 2, (500 + f.bottom) * k - h, w, h);
+  }
+  BMASK = document.createElement('canvas');
+  BMASK.width = BMASK.height = BQ;
+}
+
+// Букет раскрывается целиком: поднимается от стеблей и проявляется снизу вверх, расходясь вширь
+function drawBouquet(c, ox, oy, u, s) {
+  const p = s.g, rev = easeOut(p);
+  const mx = BMASK.getContext('2d');
+  mx.globalCompositeOperation = 'copy';
+  mx.drawImage(BOUQUET, 0, 0);
+  mx.globalCompositeOperation = 'destination-in';
+  const bottom = (500 + BQ_BOTTOM) / 1000 * BQ;
+  const edge = bottom - bottom * rev * 1.2;
+  const g = mx.createLinearGradient(0, edge, 0, edge + BQ * .2);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,1)');
+  mx.fillStyle = g; mx.fillRect(0, 0, BQ, BQ);
+
+  const sx = .72 + .28 * easeOut(clamp(p * 1.3 - .15)), sy = .6 + .4 * rev;
+  c.save();
+  c.translate(ox, oy + BQ_BOTTOM * u);
+  c.rotate(.025 * Math.sin(s.t * .7) * p);
+  c.scale(sx, sy);
+  c.drawImage(BMASK, -500 * u, -(500 + BQ_BOTTOM) * u, 1000 * u, 1000 * u);
+  c.restore();
+}
+
+// ---------- ASCII ----------
+const colorCache = new Map();
+const buckets = new Map();
+function asciify() {
+  const d = sctx.getImageData(0, 0, COLS, ROWS).data;
+  octx.fillStyle = '#000'; octx.fillRect(0, 0, W, H);
+  const n = RAMP.length - 1;
+  for (let j = 0; j < ROWS; j++) {
+    const y = j * CH;
+    for (let i = 0; i < COLS; i++) {
+      const p = (j * COLS + i) * 4;
+      const r = d[p], g = d[p + 1], b = d[p + 2];
+      // плотность символа — смесь яркости и насыщенности цвета, чтобы красные лепестки не «проваливались»
+      const l = (.299 * r + .587 * g + .114 * b) / 255 * .45 + Math.max(r, g, b) / 255 * .55;
+      if (l < .04) continue;
+      const m = Math.min(2.2, 255 / Math.max(r, g, b));
+      const key = ((r * m) >> 4) << 8 | ((g * m) >> 4) << 4 | ((b * m) >> 4);
+      let list = buckets.get(key);
+      if (!list) buckets.set(key, list = []);
+      list.push(i * CW, y, RAMP[Math.min(n, 1 + (Math.pow(l, .75) * n) | 0)]);
+    }
+  }
+  // один fillStyle на цвет вместо смены цвета на каждый символ
+  for (const [key, list] of buckets) {
+    if (!list.length) continue;
+    let col = colorCache.get(key);
+    if (!col) { col = `rgb(${(key >> 8) * 17},${((key >> 4) & 15) * 17},${(key & 15) * 17})`; colorCache.set(key, col); }
+    octx.fillStyle = col;
+    for (let k = 0; k < list.length; k += 3) octx.fillText(list[k + 2], list[k], list[k + 1]);
+    list.length = 0;
+  }
+}
+
+// ---------- loop ----------
+let time = 0, last = performance.now(), paused = false;
+function renderFrame(t) {
+  const s = timeline(t);
+  sctx.setTransform(1, 0, 0, 1, 0, 0);
+  sctx.fillStyle = '#000'; sctx.fillRect(0, 0, COLS, ROWS);
+  sctx.setTransform(1 / CW, 0, 0, 1 / CH, 0, 0);
+  drawEye(sctx, s);
+  asciify();
+}
+function frame(now) {
+  const dt = Math.min(.1, (now - last) / 1000); last = now;
+  if (!paused) time += dt;
+  renderFrame(time);
+  requestAnimationFrame(frame);
+}
+
+// Сцена стартует только после расшифровки фото на экране блокировки (lock.js)
+window.startScene = assets => Promise.all([loadImage(assets.eye), ...LILIES.map(f => loadImage(assets[f.key]))]).then(([eye, ...lilies]) => {
+  EYE = eye;
+  lilies.forEach((img, i) => { LILIES[i].img = cutout(img); });
+  composeBouquet();
+  out.addEventListener('click', () => { time = 0; });
+  addEventListener('keydown', e => { if (e.code === 'Space' && !document.getElementById('lock')) paused = !paused; });
+  time = 0; last = performance.now();
+  requestAnimationFrame(frame);
+});
+</script>
+</body>
+</html>
